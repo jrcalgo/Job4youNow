@@ -1,0 +1,4 @@
+[submodule "agent/modules/career-ops-modified"]
+	path = agent/modules/career-ops-modified
+	url = https://github.com/jrcalgo/career-ops-modified.git
+	branch = main

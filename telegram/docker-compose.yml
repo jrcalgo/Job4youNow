@@ -1,0 +1,46 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: job4menow-telegram-bot:local
+    container_name: job4menow-telegram-bot
+    # Long-running daemon (forever long-poll) — restart it whenever it dies for any
+    # reason other than an explicit `docker stop`/`docker compose down`.
+    restart: unless-stopped
+    # Deliberately NOT setting init:true here — that would inject Docker's own
+    # init binary as PID 1 ahead of the Dockerfile's own ENTRYPOINT, demoting
+    # our tini to a child (confirmed by a real run: tini logged "not running
+    # as PID 1 and isn't registered as a child subreaper", which means
+    # SIGTERM forwarding / zombie reaping silently stop working). One init
+    # process is correct; the Dockerfile's tini ENTRYPOINT is already it.
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      # AWS SDK v3's default credential provider chain reads these automatically.
+      # Leave unset (and use the ~/.aws mount below instead) if you use a named
+      # profile / SSO / an EC2-instance-role style setup instead of static keys.
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_PROFILE=${AWS_PROFILE:-}
+    volumes:
+      # Local artifact cache (LRU-evicted by the bot itself) — survives container
+      # recreation so a redeploy doesn't force a full re-download from S3.
+      - job4menow-telegram-cache:/app/.cache
+      # Only needed when AWS_PROFILE is set above instead of static keys.
+      - ${HOME}/.aws:/root/.aws:ro
+    # bot.mjs touches J4N_HEARTBEAT_FILE (default /app/.cache/.heartbeat) after every
+    # poll cycle (long-poll waits up to ~50s, so a live process updates it at least
+    # that often) — this fails if the event loop is wedged even though the process
+    # itself is still alive, which a bare `node -e` check would miss.
+    healthcheck:
+      test: ["CMD", "node", "-e", "const s=require('fs').statSync(process.env.J4N_HEARTBEAT_FILE||'/app/.cache/.heartbeat'); process.exit(Date.now()-s.mtimeMs<120000?0:1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  job4menow-telegram-cache:

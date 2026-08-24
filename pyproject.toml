@@ -1,0 +1,19 @@
+[project]
+name = "job4menow"
+version = "0.1.0"
+description = "job4meNow — Python agentic system (agent/), database utilities (database/), and supporting tooling for the telegram bot (telegram/)."
+authors = [
+    { name = "acn-ai", email = "316778712+acn-ai@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "cursor-sdk>=1.0.28",
+    "python-dotenv>=1.2.3",
+]
+
+# This project has no installable package (main.py / agent/ / database/ are run
+# directly via `uv run`, not imported as a distributed library) — package = false
+# tells uv to manage dependencies only, and skip trying to build/install a
+# job4menow package into the venv (there is no src/job4menow/ or job4menow/ to build).
+[tool.uv]
+package = false
