@@ -20,7 +20,7 @@ import { buildSessionState, validateQueue } from '../src/protocol/core.mjs';
 
 process.env.AWS_REGION ||= 'us-east-1';
 process.env.S3_BUCKET ||= 'fake-bucket';
-process.env.S3_PREFIX = 'job4menow-telegram/';
+process.env.S3_PREFIX = 'job4younow-telegram/';
 
 let server;
 let effects;
@@ -49,7 +49,7 @@ function fakeS3WithObject(key, content) {
     async send(command) {
       calls.push(command);
       if (command instanceof GetObjectCommand) {
-        if (command.input.Key !== `job4menow-telegram/${key}`) {
+        if (command.input.Key !== `job4younow-telegram/${key}`) {
           throw Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' });
         }
         return { Body: Readable.from([Buffer.from(content)]) };

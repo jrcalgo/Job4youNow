@@ -21,7 +21,7 @@ process.env.AWS_REGION ||= 'us-east-1';
 process.env.AURORA_RESOURCE_ARN ||= 'arn:aws:rds:us-east-1:000000000000:cluster:fake';
 process.env.AURORA_SECRET_ARN ||= 'arn:aws:secretsmanager:us-east-1:000000000000:secret:fake';
 process.env.S3_BUCKET ||= 'fake-bucket';
-process.env.S3_PREFIX = 'job4menow-telegram/';
+process.env.S3_PREFIX = 'job4younow-telegram/';
 process.env.TELEGRAM_CHAT_ID ||= '42';
 
 const { cmdIngest, cmdQueues, cmdState, cmdReset } = await import('../src/cli.mjs');
@@ -89,7 +89,7 @@ test('ingest: uploads the artifact to S3 and writes queue+items+artifacts in one
 
     assert.equal(s3Calls.length, 1);
     assert.ok(s3Calls[0] instanceof PutObjectCommand);
-    assert.match(s3Calls[0].input.Key, new RegExp(`^job4menow-telegram/queues/${parsed.queue_id}/1-cv_pdf\\.pdf$`));
+    assert.match(s3Calls[0].input.Key, new RegExp(`^job4younow-telegram/queues/${parsed.queue_id}/1-cv_pdf\\.pdf$`));
 
     const names = rds.calls.map((c) => c.name);
     assert.deepEqual(names, ['BeginTransactionCommand', 'ExecuteStatementCommand', 'BatchExecuteStatementCommand', 'BatchExecuteStatementCommand', 'CommitTransactionCommand']);

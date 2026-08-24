@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: job4menow-telegram-bot:local
-    container_name: job4menow-telegram-bot
+    image: job4younow-telegram-bot:local
+    container_name: job4younow-telegram-bot
     # Long-running daemon (forever long-poll) — restart it whenever it dies for any
     # reason other than an explicit `docker stop`/`docker compose down`.
     restart: unless-stopped
@@ -28,7 +28,7 @@ services:
     volumes:
       # Local artifact cache (LRU-evicted by the bot itself) — survives container
       # recreation so a redeploy doesn't force a full re-download from S3.
-      - job4menow-telegram-cache:/app/.cache
+      - job4younow-telegram-cache:/app/.cache
       # Only needed when AWS_PROFILE is set above instead of static keys.
       - ${HOME}/.aws:/root/.aws:ro
     # bot.mjs touches J4N_HEARTBEAT_FILE (default /app/.cache/.heartbeat) after every
@@ -43,4 +43,4 @@ services:
       start_period: 30s
 
 volumes:
-  job4menow-telegram-cache:
+  job4younow-telegram-cache:

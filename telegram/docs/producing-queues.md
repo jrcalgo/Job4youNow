@@ -76,7 +76,7 @@ docker compose exec bot node src/cli.mjs ingest \
 - career-ops invocation, run from the career-ops checkout after building `output/telegram-queue.json` per its own `modes/telegram.md` step 1:
 
   ```bash
-  docker compose -f /path/to/job4meNow/telegram/docker-compose.yml exec bot \
+  docker compose -f /path/to/Job4youNow/telegram/docker-compose.yml exec bot \
     node src/cli.mjs ingest --queue /career-ops/output/telegram-queue.json --root /career-ops
   ```
 

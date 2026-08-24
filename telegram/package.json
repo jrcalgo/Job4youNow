@@ -1,5 +1,5 @@
 {
-  "name": "job4menow-telegram-bot",
+  "name": "job4younow-telegram-bot",
   "version": "0.1.0",
   "description": "Continuously-hosted Telegram bot for reviewing job queues produced by career-ops (or any other producer), backed by Aurora PostgreSQL Serverless v2 (Data API) and S3.",
   "private": true,

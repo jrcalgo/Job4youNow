@@ -15,7 +15,7 @@ import {
 
 process.env.AWS_REGION ||= 'us-east-1';
 process.env.S3_BUCKET ||= 'fake-bucket';
-process.env.S3_PREFIX = 'job4menow-telegram/';
+process.env.S3_PREFIX = 'job4younow-telegram/';
 
 function fakeS3({ objects = {} } = {}) {
   const calls = [];
@@ -74,7 +74,7 @@ test('uploadArtifact computes the real sha256 + size and PUTs under S3_PREFIX', 
     assert.equal(result.byteSize, content.length);
     assert.equal(result.checksum, expectedSha);
     assert.equal(fake.calls.length, 1);
-    assert.equal(fake.calls[0].input.Key, `job4menow-telegram/${key}`);
+    assert.equal(fake.calls[0].input.Key, `job4younow-telegram/${key}`);
     assert.equal(fake.calls[0].input.Metadata.sha256, expectedSha);
   });
 });
@@ -83,7 +83,7 @@ test('getArtifactPath downloads on a cache miss, then serves the SAME file on a 
   await withTempCacheDir(async () => {
     const key = artifactKey('tg-1', 1, 'jd', '.md');
     const content = Buffer.from('# JD text');
-    const fake = fakeS3({ objects: { [`job4menow-telegram/${key}`]: content } });
+    const fake = fakeS3({ objects: { [`job4younow-telegram/${key}`]: content } });
     __setTestS3(fake);
 
     const path1 = await getArtifactPath(key);
@@ -106,8 +106,8 @@ test('LRU eviction removes the coldest entry once the cache exceeds its byte bud
     const keyA = artifactKey('tg-1', 1, 'cv_pdf', '.pdf');
     const keyB = artifactKey('tg-1', 2, 'cv_pdf', '.pdf');
     const objects = {
-      [`job4menow-telegram/${keyA}`]: Buffer.from('AAAAAAAAAA'), // 10 bytes, downloaded first (oldest)
-      [`job4menow-telegram/${keyB}`]: Buffer.from('BBBBBBBBBB'), // 10 bytes, downloaded second (newest)
+      [`job4younow-telegram/${keyA}`]: Buffer.from('AAAAAAAAAA'), // 10 bytes, downloaded first (oldest)
+      [`job4younow-telegram/${keyB}`]: Buffer.from('BBBBBBBBBB'), // 10 bytes, downloaded second (newest)
     };
     __setTestS3(fakeS3({ objects }));
 

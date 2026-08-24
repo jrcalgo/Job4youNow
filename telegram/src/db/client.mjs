@@ -52,7 +52,7 @@ function commonArgs() {
   return {
     resourceArn: requireEnv('AURORA_RESOURCE_ARN'),
     secretArn: requireEnv('AURORA_SECRET_ARN'),
-    database: process.env.AURORA_DATABASE || 'job4menow',
+    database: process.env.AURORA_DATABASE || 'job4younow',
   };
 }
 

@@ -1,4 +1,4 @@
-# job4meNow telegram bot container
+# Job4youNow telegram bot container
 # Base: official Node LTS-track Alpine image. No Playwright/browser dependency here
 # (unlike career-ops) — this process only talks to the Telegram Bot API, Aurora's
 # Data API (HTTPS), and S3, so a slim image is enough.

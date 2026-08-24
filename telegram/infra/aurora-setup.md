@@ -4,10 +4,10 @@ Run these once, in order, with the AWS CLI. Each step's output feeds the next �
 
 ```bash
 export AWS_REGION=us-east-1          # pick yours
-export CLUSTER_ID=job4menow-telegram
-export DB_NAME=job4menow
-export MASTER_USERNAME=job4menow_admin
-export BUCKET_NAME=job4menow-telegram-artifacts-$(aws sts get-caller-identity --query Account --output text)
+export CLUSTER_ID=job4younow-telegram
+export DB_NAME=job4younow
+export MASTER_USERNAME=job4younow_admin
+export BUCKET_NAME=job4younow-telegram-artifacts-$(aws sts get-caller-identity --query Account --output text)
 ```
 
 ## 1. Confirm Serverless v2 scale-to-zero is available in your region
@@ -112,9 +112,9 @@ CV/JD artifacts are personal data — the public-access-block call is not option
 sed -e "s#{{AURORA_RESOURCE_ARN}}#$(aws rds describe-db-clusters --region "$AWS_REGION" --db-cluster-identifier "$CLUSTER_ID" --query 'DBClusters[0].DBClusterArn' --output text)#" \
     -e "s#{{AURORA_SECRET_ARN}}#$(aws rds describe-db-clusters --region "$AWS_REGION" --db-cluster-identifier "$CLUSTER_ID" --query 'DBClusters[0].MasterUserSecret.SecretArn' --output text)#" \
     -e "s#{{S3_BUCKET}}#$BUCKET_NAME#g" \
-    infra/iam-policy.json > /tmp/job4menow-telegram-policy.json
+    infra/iam-policy.json > /tmp/job4younow-telegram-policy.json
 
-aws iam create-policy --policy-name job4menow-telegram --policy-document file:///tmp/job4menow-telegram-policy.json
+aws iam create-policy --policy-name job4younow-telegram --policy-document file:///tmp/job4younow-telegram-policy.json
 # then attach it to your IAM user/role, e.g.:
 aws iam attach-user-policy --user-name <your-iam-user> --policy-arn <the ARN create-policy just printed>
 ```
@@ -123,7 +123,7 @@ aws iam attach-user-policy --user-name <your-iam-user> --policy-arn <the ARN cre
 
 ```bash
 cp .env.example .env
-# edit .env: AWS_REGION, AURORA_RESOURCE_ARN, AURORA_SECRET_ARN, AURORA_DATABASE=job4menow,
+# edit .env: AWS_REGION, AURORA_RESOURCE_ARN, AURORA_SECRET_ARN, AURORA_DATABASE=job4younow,
 # S3_BUCKET, plus TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID (see docs/producing-queues.md — a
 # SEPARATE bot from career-ops' own telegram mode) and your AWS credentials/profile.
 

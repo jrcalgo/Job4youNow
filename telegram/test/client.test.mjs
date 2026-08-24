@@ -12,7 +12,7 @@ import { createFakeRdsClient, paramValue } from './helpers/fake-rds-client.mjs';
 process.env.AWS_REGION ||= 'us-east-1';
 process.env.AURORA_RESOURCE_ARN ||= 'arn:aws:rds:us-east-1:000000000000:cluster:fake';
 process.env.AURORA_SECRET_ARN ||= 'arn:aws:secretsmanager:us-east-1:000000000000:secret:fake';
-process.env.AURORA_DATABASE ||= 'job4menow_test';
+process.env.AURORA_DATABASE ||= 'job4younow_test';
 
 test.afterEach(() => __setTestClient(null));
 

@@ -12,7 +12,7 @@ possible.
 Usage:
     uv run python agent/demo_career_ops_agent.py
 
-Requires CURSOR_API_KEY in .env (job4meNow root) or the environment — get one
+Requires CURSOR_API_KEY in .env (Job4youNow root) or the environment — get one
 from https://cursor.com/dashboard/integrations. A locally logged-in
 `cursor-agent` CLI session is NOT sufficient on its own: verified empirically
 that Agent.prompt(...) with local runtime still raises ConfigurationError
@@ -46,7 +46,7 @@ def main() -> int:
         print(
             "CURSOR_API_KEY is not set. Get one from "
             "https://cursor.com/dashboard/integrations and put it in .env "
-            "(job4meNow root).",
+            "(Job4youNow root).",
             file=sys.stderr,
         )
         return 1

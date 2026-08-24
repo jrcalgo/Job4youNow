@@ -1,4 +1,4 @@
--- db/schema.sql — job4meNow telegram bot schema (Aurora PostgreSQL Serverless v2).
+-- db/schema.sql — Job4youNow telegram bot schema (Aurora PostgreSQL Serverless v2).
 -- Apply once via: node src/cli.mjs migrate
 -- (or paste into the Data API / query editor directly — see infra/aurora-setup.md).
 --
