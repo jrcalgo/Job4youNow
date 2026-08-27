@@ -1,0 +1,62 @@
+services:
+  agent:
+    build:
+      # Repo root — see Dockerfile's header comment on why.
+      context: ..
+      dockerfile: agent/Dockerfile
+    image: job4younow-agent:local
+    container_name: job4younow-agent
+    # Long-running: the FastAPI app and the worker/scheduler loops all live
+    # in this one process (see agent/app/main.py) — restart on any crash.
+    restart: unless-stopped
+    networks:
+      - job4younow
+    # Single repo-root .env — see ../.env.example. Provides Aurora
+    # credentials, both S3 bucket names (this service has read+write on
+    # both — see the root env file's privacy-boundary note), Cursor SDK
+    # settings, and every AGENT_* tunable.
+    env_file:
+      - ../.env
+    environment:
+      # AWS SDK's default credential provider chain reads these automatically.
+      # Leave unset (and use the ~/.aws mount below) if you use AWS_PROFILE /
+      # SSO / an EC2-instance-role style setup instead of static keys.
+      #
+      # Bare references (no `=${...:-}` default) on purpose: when the host
+      # shell doesn't have one of these set at all, Compose OMITS the key
+      # from the container entirely. A `:-` default would instead inject an
+      # EMPTY-STRING value — which is worse than unset, since boto3 then
+      # tries to load a profile literally named "" and fails with
+      # `ProfileNotFound`, confirmed by a real container run.
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - AWS_PROFILE
+    ports:
+      - "8000:8000"
+    volumes:
+      # Only needed when AWS_PROFILE is set above instead of static keys.
+      - ${HOME}/.aws:/root/.aws:ro
+      # career-ops-modified: cv.md is READ from here, tailored PDFs are
+      # WRITTEN here (career-ops's own output/ dir) and to the local backup
+      # (see ../.env.example's PRIVATE_LOCAL_BACKUP_DIR) — bind-mounted
+      # rather than baked into the image, so cv.md/portals.yml can be
+      # edited without a rebuild and generated output survives container
+      # recreation. See agent/infra/career-ops-setup.md.
+      - ./modules/career-ops-modified:/repo/agent/modules/career-ops-modified
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+# Shared with telegram/docker-compose.yml (a separate compose project) so
+# the bot can reach this service at http://agent:8000 — see
+# AGENT_API_BASE in .env.example. `external: true` because two independent
+# `docker compose up` invocations can't both "own" the same network;
+# create it once with `docker network create job4younow` before starting
+# either service (see the root README/setup docs).
+networks:
+  job4younow:
+    external: true

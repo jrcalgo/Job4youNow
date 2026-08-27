@@ -7,8 +7,16 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "boto3>=1.43.79",
     "cursor-sdk>=1.0.28",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "langgraph>=1.2.11",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.15.0",
+    "pypdf>=6.16.2",
     "python-dotenv>=1.2.3",
+    "uvicorn[standard]>=0.52.4",
 ]
 
 # This project has no installable package (main.py / agent/ / database/ are run
@@ -17,3 +25,9 @@ dependencies = [
 # job4younow package into the venv (there is no src/job4younow/ or job4younow/ to build).
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
