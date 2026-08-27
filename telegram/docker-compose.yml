@@ -8,26 +8,43 @@ services:
     # Long-running daemon (forever long-poll) — restart it whenever it dies for any
     # reason other than an explicit `docker stop`/`docker compose down`.
     restart: unless-stopped
+    networks:
+      - job4younow
     # Deliberately NOT setting init:true here — that would inject Docker's own
     # init binary as PID 1 ahead of the Dockerfile's own ENTRYPOINT, demoting
     # our tini to a child (confirmed by a real run: tini logged "not running
     # as PID 1 and isn't registered as a child subreaper", which means
     # SIGTERM forwarding / zombie reaping silently stop working). One init
     # process is correct; the Dockerfile's tini ENTRYPOINT is already it.
+    # Single repo-root .env — see ../.env.example. Provides
+    # TELEGRAM_BOT_TOKEN/CHAT_ID, JOB_ARTIFACTS_*/PRIVATE_USER_ARTIFACTS_*
+    # (read-only delivery for this service), AGENT_API_BASE, and every
+    # J4N_* tunable. This service is never given Aurora credentials or
+    # write access to either S3 bucket's IAM policy — see the root env
+    # file's privacy-boundary note.
     env_file:
-      - .env
+      - ../.env
     environment:
       - NODE_ENV=production
       # AWS SDK v3's default credential provider chain reads these automatically.
       # Leave unset (and use the ~/.aws mount below instead) if you use a named
       # profile / SSO / an EC2-instance-role style setup instead of static keys.
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
-      - AWS_PROFILE=${AWS_PROFILE:-}
+      #
+      # Bare references (no `=${...:-}` default) on purpose: when the host
+      # shell doesn't have one of these set at all, Compose OMITS the key
+      # from the container entirely. A `:-` default would instead inject an
+      # EMPTY-STRING value — which is worse than unset, since the AWS SDK
+      # then tries to load a profile literally named "" and fails with
+      # `CredentialsProviderError`, confirmed by a real container run.
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - AWS_PROFILE
     volumes:
       # Local artifact cache (LRU-evicted by the bot itself) — survives container
       # recreation so a redeploy doesn't force a full re-download from S3.
+      # Holds separate job-artifacts/ and private-user-artifacts/
+      # subdirectories — see artifacts/store.mjs.
       - job4younow-telegram-cache:/app/.cache
       # Only needed when AWS_PROFILE is set above instead of static keys.
       - ${HOME}/.aws:/root/.aws:ro
@@ -44,3 +61,8 @@ services:
 
 volumes:
   job4younow-telegram-cache:
+
+# Shared with agent/docker-compose.yml — see that file's matching comment.
+networks:
+  job4younow:
+    external: true

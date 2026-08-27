@@ -16,14 +16,15 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
-import {
-  applyAction, currentItem, HELP_TEXT, normalizeUpdate,
-} from './protocol/core.mjs';
+import { applyAction, currentItem, generateQueueId, withMainMenuRow, normalizeUpdate } from './protocol/core.mjs';
 import { answerCallback, getUpdates, sendMessage } from './telegram/api.mjs';
 import { runEffects, sendDigestAndCard, sendQueueList } from './telegram/effects.mjs';
 import * as repo from './db/repo.mjs';
 import { setRedactedSecrets, log } from './lib/log.mjs';
 import { sleep } from './lib/retry.mjs';
+import { runAgentOutboxLoop } from './agent/outbox.mjs';
+import { forwardToAgent } from './agent/inbound.mjs';
+import { agentCall } from './agent/client.mjs';
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -44,8 +45,101 @@ function touchHeartbeat() {
   }
 }
 
-const NO_QUEUE_HINT = 'No active queue yet. Send QUEUES to see what has been ingested, or QUEUE <n> to start one.';
 const CURSOR_JUMPING_ACTIONS = new Set(['cv', 'jd', 'contacts', 'company', 'more']);
+// parseCommand()/parseCallbackData() flag these two reasons when a message
+// was deliberately refused locally (a submit/injection attempt, or RESET) —
+// never forward either one to the agent app, active queue or not.
+const LOCAL_ONLY_REASONS = new Set(['rejected_input', 'reset_refused']);
+
+/** Forwards to the agent app's canonical main menu (hub edit when possible). */
+async function forwardMainMenuToAgent(token, normalized, chatId, dryRun) {
+  await forwardToAgent(token, {
+    chatId,
+    updateId: normalized.update_id,
+    hubMessageId: normalized.hub_message_id,
+    messageId: normalized.message_id,
+    callback: { action: 'main', value: null },
+  }, { dryRun });
+}
+/** Forwards one normalized text update to the agent app — see agent/inbound.mjs. */
+async function forwardTextToAgent(token, chatId, normalized, dryRun) {
+  await forwardToAgent(token, {
+    chatId, updateId: normalized.update_id, messageId: normalized.message_id, text: normalized.raw,
+  }, { dryRun });
+}
+
+/**
+ * Forwards one normalized 'app_callback' (a tapped button outside this
+ * daemon's own "tg:" callback namespace — see protocol/core.mjs's
+ * parseCallbackData) to the agent app as a TelegramCallback, the same way
+ * agent/app/routing/intent_router.py's parse_callback would parse it had
+ * the user typed the equivalent command instead of tapping a button.
+ */
+async function forwardCallbackToAgent(token, chatId, normalized, dryRun) {
+  await forwardToAgent(token, {
+    chatId,
+    updateId: normalized.update_id,
+    hubMessageId: normalized.hub_message_id,
+    callback: { action: normalized.appAction, value: normalized.appValue },
+  }, { dryRun });
+}
+
+async function handleBlEnqueue(token, chatId, normalized, dryRun) {
+  const listingId = normalized.listing_id;
+  try {
+    const data = await agentCall('GET', `/job-listings/${encodeURIComponent(listingId)}`);
+    if (!data?.ok || !data.listing) {
+      await sendMessage(token, chatId, 'Could not load that listing.', {
+        replyMarkup: withMainMenuRow(),
+        dryRun,
+      });
+      return;
+    }
+    const listing = data.listing;
+    const queueId = generateQueueId();
+    const title = `Backlog: ${listing.company_name} — ${listing.title}`.slice(0, 120);
+    await repo.insertQueue({
+      id: queueId,
+      title,
+      source: `backlog:${listingId}`,
+      items: [{
+        n: 1,
+        id: listing.id,
+        report_num: null,
+        company: listing.company_name,
+        role: listing.role_id,
+        url: listing.url || '',
+        score: '',
+        location: listing.location || '',
+        salary: '',
+        legitimacy: '',
+        status: 'pending',
+        artifacts: {},
+        contacts: [],
+        summary: { job: listing.summary || [], company: [], risks: [], why_match: [] },
+        history: [],
+        can_send_cv: false,
+        can_send_contacts: false,
+      }],
+      artifacts: [],
+    });
+    await agentCall('PATCH', `/job-listings/${encodeURIComponent(listingId)}/status`, {
+      body: { status: 'queued' },
+    });
+    await sendMessage(
+      token,
+      chatId,
+      `Saved to queue ${queueId}. Send QUEUES to review (no CV/JD until full ingest).`,
+      { replyMarkup: withMainMenuRow(), dryRun },
+    );
+  } catch (err) {
+    log.error('enqueue from backlog failed', { listingId, error: err?.message });
+    await sendMessage(token, chatId, 'Failed to save listing to queue.', {
+      replyMarkup: withMainMenuRow(),
+      dryRun,
+    });
+  }
+}
 
 /**
  * Handle exactly one Telegram update. Returns the (possibly new/updated)
@@ -79,10 +173,30 @@ export async function handleUpdate(update, { token, chatId, dryRun, state }) {
     await sendQueueList(token, chatId, queues, { dryRun });
     return state;
   }
+  if (normalized.action === 'main') {
+    await forwardMainMenuToAgent(token, normalized, chatId, dryRun);
+    return state;
+  }
+  if (normalized.action === 'help' && normalized.source === 'callback') {
+    await forwardToAgent(token, {
+      chatId,
+      updateId: normalized.update_id,
+      hubMessageId: normalized.hub_message_id,
+      callback: { action: 'help', value: null },
+    }, { dryRun });
+    return state;
+  }
+  if (normalized.action === 'bl_enqueue') {
+    await handleBlEnqueue(token, chatId, normalized, dryRun);
+    return state;
+  }
   if (normalized.action === 'use_queue') {
     const targetId = await repo.resolveQueueByPosition(normalized.n);
     if (!targetId) {
-      await sendMessage(token, chatId, `No queue at position ${normalized.n}. Send QUEUES to see the list.`, { dryRun });
+      await sendMessage(token, chatId, `No queue at position ${normalized.n}. Send QUEUES to see the list.`, {
+        replyMarkup: withMainMenuRow(),
+        dryRun,
+      });
       return state;
     }
     await repo.switchQueue(chatId, targetId);
@@ -91,9 +205,51 @@ export async function handleUpdate(update, { token, chatId, dryRun, state }) {
     return nextState;
   }
 
+  // A tapped button the agent app itself rendered (BACKLOG's role list,
+  // the MODELS wizard, the main menu's Backlog/Models buttons, ...) —
+  // queue-agnostic, exactly like 'queues'/'use_queue' above, since these
+  // features have nothing to do with queue review. Forwarding (rather
+  // than the old "malformed callback" dead end) is what actually lets a
+  // user tap through the agent app's own menus from Telegram.
+  if (normalized.action === 'app_callback') {
+    await forwardCallbackToAgent(token, chatId, normalized, dryRun);
+    return state;
+  }
+
   if (!state) {
-    const reply = normalized.action === 'help' ? HELP_TEXT : NO_QUEUE_HINT;
-    await sendMessage(token, chatId, reply, { dryRun });
+    if (normalized.action === 'help' && normalized.source === 'text') {
+      await forwardToAgent(token, {
+        chatId,
+        updateId: normalized.update_id,
+        messageId: normalized.message_id,
+        hubMessageId: normalized.hub_message_id,
+        text: '',
+      }, { dryRun });
+      return state;
+    }
+    // No active queue and this isn't HELP/QUEUES/QUEUE <n> (all handled
+    // above) — every other typed message is a free-text agent query
+    // (SCAN ..., BACKLOG, a research question, ...), never a queue-review
+    // instruction, since there is no queue to review yet. Native command
+    // WORDS (e.g. "next") parse the same way and are forwarded too — they
+    // are meaningless without an active queue regardless.
+    if (normalized.source === 'text' && !LOCAL_ONLY_REASONS.has(normalized.reason)) {
+      await forwardTextToAgent(token, chatId, normalized, dryRun);
+      return state;
+    }
+    // A stale/malformed callback (e.g. a button left over from a queue that
+    // no longer exists) with no active queue — forward to agent main menu.
+    await forwardMainMenuToAgent(token, normalized, chatId, dryRun);
+    return state;
+  }
+
+  // An active queue exists, but this text didn't match any native command
+  // in the closed grammar (protocol/core.mjs's parseCommand) — rather than
+  // the old blanket "Unknown command" reply, treat it as a free-text agent
+  // query. Deliberate submit/injection attempts and RESET stay refused
+  // locally (LOCAL_ONLY_REASONS), never reaching the agent app.
+  if (normalized.source === 'text' && normalized.action === 'unknown' && !LOCAL_ONLY_REASONS.has(normalized.reason)) {
+    await forwardTextToAgent(token, chatId, normalized, dryRun);
     return state;
   }
 
@@ -141,7 +297,13 @@ async function main() {
   requireEnv('AWS_REGION');
   requireEnv('AURORA_RESOURCE_ARN');
   requireEnv('AURORA_SECRET_ARN');
-  requireEnv('S3_BUCKET');
+  // JOB_ARTIFACTS_BUCKET is the current name; S3_BUCKET is the legacy one
+  // artifacts/store.mjs still falls back to — accept either here so this
+  // check can't reject a deployment store.mjs itself would happily serve.
+  if (!process.env.JOB_ARTIFACTS_BUCKET && !process.env.S3_BUCKET) {
+    log.error('missing required env var: JOB_ARTIFACTS_BUCKET (or legacy S3_BUCKET)');
+    process.exit(1);
+  }
 
   const ownerId = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
   const leaseTtlMs = Number(process.env.J4N_LEASE_TTL_MS) || 180_000;
@@ -175,10 +337,24 @@ async function main() {
     } catch (err) {
       log.warn('release lease failed during shutdown', { error: err.message });
     }
+    await agentOutboxLoop.catch((err) => log.warn('agent outbox loop ended with an error', { error: err?.message }));
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // Independent of the queue-review loop below and unrelated to it — see
+  // agent/outbox.mjs's header comment. Defaults ON (see .env.example) now
+  // that handleUpdate() forwards free text to the agent app — set
+  // J4N_AGENT_OUTBOX_ENABLED=0 only when running with no agent app at all.
+  let agentOutboxLoop = Promise.resolve();
+  if (process.env.J4N_AGENT_OUTBOX_ENABLED === '1') {
+    agentOutboxLoop = runAgentOutboxLoop(token, {
+      pollMs: Number(process.env.J4N_AGENT_OUTBOX_POLL_MS) || 3000,
+      dryRun,
+      shouldStop: () => shuttingDown,
+    });
+  }
 
   let state = await repo.loadFullState(chatId);
   log.info('daemon started, entering poll loop', { chatId, pollTimeoutSec, hasActiveQueue: Boolean(state) });
