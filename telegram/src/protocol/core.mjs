@@ -42,8 +42,19 @@ export const ALLOWED_ARTIFACT_PREFIXES = ['output/', 'reports/', 'jds/', 'batch/
 export const ACTIONS = Object.freeze([
   'next', 'skip', 'more', 'cv', 'jd', 'contacts', 'company', 'note',
   'pause', 'resume', 'list', 'queues', 'use_queue', 'help', 'jump',
-  'unknown', 'stale', 'unauthorized',
+  'app_callback', 'unknown', 'stale', 'unauthorized',
 ]);
+
+// Buttons the main menu shows for agent-app features that need no typed
+// argument — mirrors agent/app/routing/intent_router.py's recognized
+// callback actions (`backlog`, and every `_MODEL_CONFIG_ACTIONS` entry via
+// `modelmenu`). None of these are in this daemon's own "tg:" callback
+// namespace — see parseCallbackData's app_callback fallback below for why
+// that's exactly what makes them forwardable.
+const APP_MENU_BUTTONS = [
+  { text: 'Backlog', callback_data: 'backlog' },
+  { text: 'Models', callback_data: 'modelmenu' },
+];
 
 const FORBIDDEN_SUBMIT = /\b(submit|apply\s+now|send\s+application|click\s+apply)\b/i;
 
@@ -53,7 +64,67 @@ const FORBIDDEN_SUBMIT = /\b(submit|apply\s+now|send\s+application|click\s+apply
 export const HELP_TEXT = [
   'Commands: NEXT, SKIP, CV, JD, CONTACTS, COMPANY, MORE, NOTE <text>, LIST, QUEUES, QUEUE <n>, HELP, PAUSE, RESUME, or a number to jump.',
   'Buttons do the same. Nothing here submits an application.',
+  'Anything else you type (a question, SCAN <role>, BACKLOG, MODELS, resume help, ...) goes to the agent app instead.',
 ].join('\n');
+
+/**
+ * Shown on /start, HELP, or whenever bot.mjs has no active queue and the
+ * update isn't free text (e.g. a stale button) — the menu-first surface for
+ * native commands. Deliberately separate from HELP_TEXT (shown mid-review,
+ * where a full command list is more useful than a 2-button menu) — see
+ * bot.mjs's dispatch for exactly when each is used.
+ *
+ * The agent-app command list below is kept in sync BY HAND with
+ * agent/app/formatting/presenters.py's help() and
+ * agent/app/routing/intent_router.py's actual prefixes (not every command
+ * presenters.help() documents is wired up yet — SCHEDULE, notably, isn't —
+ * so this only lists ones that really route correctly today).
+ */
+export const MAIN_MENU_TEXT = [
+  'Welcome to Job4youNow. Tap a button below, or type a command:',
+  '',
+  'Backlog — current job backlog by role (or type BACKLOG)',
+  'Models — choose which Cursor SDK model each task uses (or type MODELS)',
+  'Queues — switch between ingested job-review queues',
+  'Help — full command list',
+  '',
+  'Typed only — no button for these yet:',
+  'SCAN <role> <query> — start a scan',
+  'STATUS <task id> — check a task\'s progress',
+  'RESUME <role> :: <job description> — tailor your resume',
+  'Or just ask the agent app a question in plain text.',
+].join('\n');
+
+/**
+ * Main menu for the no-active-queue screen — there is no queue/item to bind
+ * callback_data to yet. Mixes two callback namespaces on purpose:
+ * "tg:menu:<action>" (this daemon's own, queue-independent actions —
+ * QUEUES/HELP) and bare "<action>[:<value>]" (the agent app's own
+ * convention — Backlog/Models). parseCallbackData tells the two apart by
+ * the "tg:" prefix alone, so bot.mjs can route each to the right place
+ * without this keyboard needing to know how that dispatch works.
+ */
+export function mainMenuKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Backlog', callback_data: 'backlog' },
+        { text: 'Settings', callback_data: 'settingsmenu' },
+      ],
+      [
+        { text: 'Models', callback_data: 'modelmenu' },
+        { text: 'Queues', callback_data: 'tg:menu:queues' },
+      ],
+      [{ text: 'Help', callback_data: 'tg:menu:help' }],
+    ],
+  };
+}
+
+/** Prepend a Main menu row to any inline keyboard (telegram-native sends). */
+export function withMainMenuRow(keyboard) {
+  const rows = keyboard?.inline_keyboard || [];
+  return { inline_keyboard: [[{ text: 'Main menu', callback_data: 'tg:menu:main' }], ...rows] };
+}
 
 /** Escape HTML for Telegram parse_mode=HTML. */
 export function escapeHtml(text) {
@@ -400,6 +471,29 @@ export function formatQueueList(queues) {
   return lines.join('\n');
 }
 
+// Caps the QUEUES keyboard so a chat with many ingested queues never sends
+// an unwieldy wall of buttons — formatQueueList's own text listing above
+// is still complete regardless; only the tappable shortcut is capped.
+const MAX_QUEUE_BUTTONS = 10;
+
+/**
+ * One button per ingested queue, addressed by list position via the
+ * native "tg:queue:<n>" callback_data (see parseCallbackData) — so QUEUES
+ * gives the user something to tap instead of requiring them to type
+ * "QUEUE <n>" from memory. Mirrors formatQueueList's exact ordering, since
+ * both render the same `queues` array from db/repo.mjs's listQueues().
+ * @param {Array<{id: string, title: string}>} queues
+ */
+export function queueListKeyboard(queues) {
+  if (!queues.length) return undefined;
+  return {
+    inline_keyboard: queues.slice(0, MAX_QUEUE_BUTTONS).map((q, i) => [{
+      text: `${i + 1}. ${q.title}`.slice(0, 48),
+      callback_data: `tg:queue:${i + 1}`,
+    }]),
+  };
+}
+
 export function inlineKeyboard(state, item = currentItem(state)) {
   if (!item) return undefined;
   const q = state.queue_short;
@@ -410,9 +504,11 @@ export function inlineKeyboard(state, item = currentItem(state)) {
   });
   return {
     inline_keyboard: [
+      [{ text: 'Main menu', callback_data: 'tg:menu:main' }],
       [btn('Next', 'next'), btn('Skip', 'skip'), btn('More', 'more')],
       [btn('CV', 'cv'), btn('JD', 'jd'), btn('Company', 'company')],
       [btn('Contacts', 'contacts'), btn('Help', 'help'), btn('Pause', 'pause')],
+      [btn('List', 'list'), btn('Queues', 'queues')],
     ],
   };
 }
@@ -426,8 +522,11 @@ export function parseCommand(text) {
   const raw = String(text ?? '').trim();
   if (!raw) return { action: 'unknown', raw };
 
-  // Strip leading slash commands like /next
-  const stripped = raw.replace(/^\/+/, '');
+  // Strip leading slash commands like /next or /start@BotName
+  let stripped = raw.replace(/^\/+/, '');
+  if (stripped.includes('@')) {
+    stripped = stripped.split('@')[0];
+  }
   const upper = stripped.toUpperCase();
 
   if (upper === 'NEXT' || upper === 'N') return { action: 'next', raw };
@@ -439,7 +538,7 @@ export function parseCommand(text) {
   if (upper === 'COMPANY' || upper === 'CO') return { action: 'company', raw };
   if (upper === 'LIST' || upper === 'DIGEST') return { action: 'list', raw };
   if (upper === 'QUEUES' || upper === 'QUEUE') return { action: 'queues', raw };
-  if (upper === 'HELP' || upper === '?' || upper === 'H') return { action: 'help', raw };
+  if (upper === 'HELP' || upper === '?' || upper === 'H' || upper === 'START') return { action: 'help', raw };
   if (upper === 'PAUSE' || upper === 'STOP') return { action: 'pause', raw };
   if (upper === 'RESUME' || upper === 'CONTINUE') return { action: 'resume', raw };
   if (upper === 'RESET') return { action: 'unknown', raw, reason: 'reset_refused' };
@@ -476,18 +575,68 @@ export function parseCommand(text) {
  */
 export function parseCallbackData(data, state) {
   const raw = String(data ?? '');
-  const m = /^tg:v1:([a-f0-9]{6}):([a-f0-9]{6}):([a-z]+)$/.exec(raw);
-  if (!m) return { action: 'unknown', raw, reason: 'malformed_callback' };
-  if (!state) return { action: 'stale', raw, reason: 'no_active_session' };
-  const [, qShort, itemKey, action] = m;
-  if (qShort !== state.queue_short) {
-    return { action: 'stale', raw, reason: 'queue_mismatch' };
+
+  // Queue-independent main-menu buttons (mainMenuKeyboard()) — no queue/item
+  // to bind to, so these skip the item-binding checks below entirely and
+  // work identically whether or not a queue is currently active.
+  const menuMatch = /^tg:menu:([a-z_]+)$/.exec(raw);
+  if (menuMatch) {
+    const [, action] = menuMatch;
+    const allowedMenu = new Set(['queues', 'help', 'main']);
+    if (!allowedMenu.has(action)) return { action: 'unknown', raw, reason: 'bad_action' };
+    return { action, raw };
   }
-  const item = state.items.find((it) => shortHash(it.id, 6) === itemKey);
-  if (!item) return { action: 'stale', raw, reason: 'item_mismatch' };
-  const allowed = new Set(['next', 'skip', 'more', 'cv', 'jd', 'company', 'contacts', 'help', 'pause']);
-  if (!allowed.has(action)) return { action: 'unknown', raw, reason: 'bad_action' };
-  return { action, itemId: item.id, n: item.n, raw };
+
+  const enqueueMatch = /^tg:bl:enqueue:(.+)$/.exec(raw);
+  if (enqueueMatch) {
+    return { action: 'bl_enqueue', listing_id: enqueueMatch[1], raw };
+  }
+
+  // QUEUES list buttons (queueListKeyboard()) — same "queue-independent,
+  // no item to bind to" shape as tg:menu:, but carries a list position
+  // instead of a fixed action name. Reuses the exact 'use_queue' action
+  // bot.mjs already handles for the typed "QUEUE <n>" / "USE <n>" commands.
+  const queueMatch = /^tg:queue:(\d{1,3})$/.exec(raw);
+  if (queueMatch) {
+    return { action: 'use_queue', n: Number(queueMatch[1]), raw };
+  }
+
+  const m = /^tg:v1:([a-f0-9]{6}):([a-f0-9]{6}):([a-z]+)$/.exec(raw);
+  if (m) {
+    if (!state) return { action: 'stale', raw, reason: 'no_active_session' };
+    const [, qShort, itemKey, action] = m;
+    if (qShort !== state.queue_short) {
+      return { action: 'stale', raw, reason: 'queue_mismatch' };
+    }
+    const item = state.items.find((it) => shortHash(it.id, 6) === itemKey);
+    if (!item) return { action: 'stale', raw, reason: 'item_mismatch' };
+    const allowed = new Set(['next', 'skip', 'more', 'cv', 'jd', 'company', 'contacts', 'help', 'pause', 'list', 'queues']);
+    if (!allowed.has(action)) return { action: 'unknown', raw, reason: 'bad_action' };
+    return { action, itemId: item.id, n: item.n, raw };
+  }
+
+  // Everything else falls outside this daemon's own "tg:"-namespaced
+  // callback grammar entirely — which, BY DESIGN, is exactly the signal
+  // that a button belongs to the agent app's own callback_data convention
+  // instead (agent/app/routing/intent_router.py's parse_callback:
+  // "action" or "action:value" — e.g. "role:backend", "modeltask:scan_role",
+  // "backlog"). Previously every one of these was misclassified as
+  // 'unknown'/malformed_callback, so tapping a button the agent app itself
+  // rendered (BACKLOG's role list, the MODELS wizard, ...) was a dead end —
+  // bot.mjs now forwards 'app_callback' to the agent app the same way it
+  // already forwards unrecognized free text.
+  //
+  // Still rejected as 'unknown' rather than forwarded: anything starting
+  // with "tg:" (reserved for this daemon, so a typo there should never
+  // silently leak to the agent app) and anything whose action portion
+  // isn't a plausible identifier (letters/digits/underscores only) — e.g.
+  // a stray "not-a-callback" string, which is never a shape either side of
+  // this system actually produces.
+  if (raw.startsWith('tg:')) return { action: 'unknown', raw, reason: 'malformed_callback' };
+  const appMatch = /^([a-z][a-z0-9_]*)(?::(.*))?$/i.exec(raw);
+  if (!appMatch) return { action: 'unknown', raw, reason: 'malformed_callback' };
+  const [, appAction, appValue] = appMatch;
+  return { action: 'app_callback', appAction, appValue: appValue ?? null, raw };
 }
 
 /**
@@ -542,6 +691,7 @@ export function normalizeUpdate(update, state, allowedChatId) {
       status: 'ok',
       source: 'callback',
       callback_query_id: update.callback_query.id,
+      hub_message_id: update.callback_query.message?.message_id,
       ...parsed,
     };
   }

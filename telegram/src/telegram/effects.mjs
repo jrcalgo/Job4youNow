@@ -16,7 +16,8 @@
 // artifacts/store.mjs, which downloads into the local LRU cache on a miss.
 import {
   currentItem, formatCompanySummary, formatCompletion, formatContactsText,
-  formatDigest, formatJobCard, formatMore, formatQueueList, inlineKeyboard, chunkMessage,
+  formatDigest, formatJobCard, formatMore, formatQueueList, inlineKeyboard, chunkMessage, queueListKeyboard,
+  withMainMenuRow,
 } from '../protocol/core.mjs';
 import { getArtifactPath } from '../artifacts/store.mjs';
 import { sendContact, sendDocument, sendMessage } from './api.mjs';
@@ -43,7 +44,10 @@ export async function runEffects(token, chatId, state, effects, opts = {}) {
       const cur = currentItem(state);
       await sendMessage(token, chatId, formatJobCard(state, cur), { replyMarkup: inlineKeyboard(state, cur), dryRun });
     } else if (eff.type === 'send_completion') {
-      await sendMessage(token, chatId, formatCompletion(state), { dryRun });
+      await sendMessage(token, chatId, formatCompletion(state), {
+        replyMarkup: withMainMenuRow([[{ text: 'Queues', callback_data: 'tg:menu:queues' }]]),
+        dryRun,
+      });
     } else if (eff.type === 'send_digest') {
       for (const chunk of chunkMessage(formatDigest(state), 4096, 'Digest')) {
         await sendMessage(token, chatId, chunk, { dryRun });
@@ -73,7 +77,10 @@ export async function runEffects(token, chatId, state, effects, opts = {}) {
     } else if (eff.type === 'send_cv' && item) {
       const key = item.artifacts?.cv_pdf || item.artifacts?.cv;
       if (!key) {
-        await sendMessage(token, chatId, `No tailored PDF for ${item.company} in this queue.`, { dryRun });
+        await sendMessage(token, chatId, `No tailored PDF for ${item.company} in this queue.`, {
+          replyMarkup: withMainMenuRow(),
+          dryRun,
+        });
         continue;
       }
       const sent = await sendArtifactOrExplain(
@@ -94,7 +101,10 @@ async function sendArtifactOrExplain(token, chatId, s3Key, caption, dryRun, comp
     localPath = dryRun ? null : await getArtifactPath(s3Key);
   } catch (err) {
     log.warn('artifact fetch failed', { s3Key, error: err.message });
-    await sendMessage(token, chatId, `Could not fetch that file for ${company} (${err.message}).`, { dryRun: false });
+    await sendMessage(token, chatId, `Could not fetch that file for ${company} (${err.message}).`, {
+      replyMarkup: withMainMenuRow(),
+      dryRun: false,
+    });
     return false;
   }
   await sendDocument(token, chatId, localPath, caption, { dryRun });
@@ -103,7 +113,10 @@ async function sendArtifactOrExplain(token, chatId, s3Key, caption, dryRun, comp
 
 /** Daemon-only: QUEUES command. Needs an async queue list, so it never goes through applyAction. */
 export async function sendQueueList(token, chatId, queues, { dryRun = false } = {}) {
-  await sendMessage(token, chatId, formatQueueList(queues), { dryRun });
+  await sendMessage(token, chatId, formatQueueList(queues), {
+    replyMarkup: withMainMenuRow(queueListKeyboard(queues)),
+    dryRun,
+  });
 }
 
 /** Daemon-only: after switching queues (USE_QUEUE), re-show the digest + current card. */
