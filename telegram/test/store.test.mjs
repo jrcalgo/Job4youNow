@@ -10,12 +10,15 @@ import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import {
-  __setTestS3, artifactKey, cacheStats, getArtifactPath, uploadArtifact,
+  __setTestS3, artifactKey, cacheStats, getArtifactPath, getArtifactPathFromBucket,
+  getArtifactPathFromRef, uploadArtifact, uploadToBucket,
 } from '../src/artifacts/store.mjs';
 
 process.env.AWS_REGION ||= 'us-east-1';
 process.env.S3_BUCKET ||= 'fake-bucket';
 process.env.S3_PREFIX = 'job4younow-telegram/';
+process.env.PRIVATE_USER_ARTIFACTS_BUCKET ||= 'fake-private-bucket';
+process.env.PRIVATE_USER_ARTIFACTS_PREFIX = 'private/';
 
 function fakeS3({ objects = {} } = {}) {
   const calls = [];
@@ -98,6 +101,57 @@ test('getArtifactPath downloads on a cache miss, then serves the SAME file on a 
     assert.equal(stats.fileCount, 1);
     assert.equal(stats.totalBytes, content.length);
   });
+});
+
+test('uploadToBucket/getArtifactPathFromBucket route the private bucket kind to its OWN bucket, prefix, and cache subdirectory', async () => {
+  await withTempCacheDir(async () => {
+    const key = 'resumes/augmented/backend/run-1.md';
+    const content = Buffer.from('# Rewritten resume');
+    const fake = fakeS3({ objects: { [`private/${key}`]: content } });
+    __setTestS3(fake);
+
+    const path = await getArtifactPathFromBucket('private_user_artifacts', key);
+    assert.equal(readFileSync(path, 'utf8'), '# Rewritten resume');
+    assert.ok(path.includes('private-user-artifacts'), 'must cache under its own subdirectory, not job-artifacts');
+
+    const getCalls = fake.calls.filter((c) => c instanceof GetObjectCommand);
+    assert.equal(getCalls[0].input.Bucket, 'fake-private-bucket');
+    assert.equal(getCalls[0].input.Key, `private/${key}`);
+  });
+});
+
+test('getArtifactPathFromRef resolves an agent-app ArtifactLocation-shaped ref by its `bucket` field', async () => {
+  await withTempCacheDir(async () => {
+    const key = 'responses/abc123.md';
+    const content = Buffer.from('private research text');
+    __setTestS3(fakeS3({ objects: { [`private/${key}`]: content } }));
+
+    const path = await getArtifactPathFromRef({ bucket: 'private_user_artifacts', key, checksumSha256: 'x', byteSize: 22 });
+    assert.equal(readFileSync(path, 'utf8'), 'private research text');
+  });
+});
+
+test('job-artifacts and private-user-artifacts caches never collide or evict each other', async () => {
+  await withTempCacheDir(async () => {
+    const jobKey = artifactKey('tg-1', 1, 'cv_pdf', '.pdf');
+    const privateKey = 'resumes/augmented/backend/run-1.md';
+    __setTestS3(fakeS3({
+      objects: {
+        [`job4younow-telegram/${jobKey}`]: Buffer.from('cv bytes'),
+        [`private/${privateKey}`]: Buffer.from('resume bytes'),
+      },
+    }));
+
+    await getArtifactPath(jobKey);
+    await getArtifactPathFromBucket('private_user_artifacts', privateKey);
+
+    assert.equal(cacheStats('job_artifacts').fileCount, 1);
+    assert.equal(cacheStats('private_user_artifacts').fileCount, 1);
+  });
+});
+
+test('an unknown bucket kind throws a clear error rather than silently picking one', async () => {
+  await assert.rejects(() => getArtifactPathFromBucket('not_a_real_bucket', 'x'), /unknown bucket kind/);
 });
 
 test('LRU eviction removes the coldest entry once the cache exceeds its byte budget, but never the entry just downloaded', async () => {

@@ -56,6 +56,31 @@ test('sendMessage: long text is chunked, only the LAST request carries reply_mar
   });
 });
 
+test('sendMessage: escape:false sends agent-app-produced HTML verbatim (no double-escaping)', async () => {
+  await withServer(async (server) => {
+    server.when('/sendMessage', () => ({ body: { ok: true, result: { message_id: 1 } } }));
+    const { sendMessage } = await loadApi();
+
+    await sendMessage(TOKEN, '42', '<b>Commands</b>\n\nBACKLOG &amp; more', { escape: false });
+    const body = JSON.parse(server.requests[0].bodyRaw.toString('utf8'));
+    assert.equal(body.text, '<b>Commands</b>\n\nBACKLOG &amp; more');
+  });
+});
+
+test('editMessageText: sends edit payload with HTML', async () => {
+  await withServer(async (server) => {
+    server.when('/editMessageText', () => ({ body: { ok: true, result: { message_id: 9 } } }));
+    const { editMessageText } = await loadApi();
+
+    await editMessageText(TOKEN, '42', 9, '<b>Menu</b>', { replyMarkup: { inline_keyboard: [] }, escape: false });
+    assert.equal(server.requests.length, 1);
+    const body = JSON.parse(server.requests[0].bodyRaw.toString('utf8'));
+    assert.equal(body.message_id, 9);
+    assert.equal(body.text, '<b>Menu</b>');
+    assert.equal(server.requests[0].path, `/bot${TOKEN}/editMessageText`);
+  });
+});
+
 test('sendMessage --dry-run never hits the network', async () => {
   await withServer(async (server) => {
     const { sendMessage } = await loadApi();
@@ -133,6 +158,24 @@ test('sendDocument: multipart body carries chat_id, caption, and the file', asyn
       assert.match(server.requests[0].headers['content-type'], /multipart\/form-data/);
       assert.ok(server.requests[0].bodyRaw.includes('resume.pdf'));
       assert.ok(server.requests[0].bodyRaw.includes('review only'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('sendDocument: escape:false sends an already-safe caption verbatim', async () => {
+  await withServer(async (server) => {
+    server.when('/sendDocument', () => ({ body: { ok: true, result: { message_id: 2 } } }));
+    const { sendDocument } = await loadApi();
+
+    const dir = mkdtempSync(join(tmpdir(), 'j4n-doc-'));
+    const filePath = join(dir, 'resume.pdf');
+    writeFileSync(filePath, '%PDF-fake-bytes');
+    try {
+      await sendDocument(TOKEN, '42', filePath, 'R&amp;D role — tailored resume', { escape: false });
+      assert.ok(server.requests[0].bodyRaw.includes('R&amp;D role'));
+      assert.ok(!server.requests[0].bodyRaw.includes('R&amp;amp;D'), 'must not double-escape an already-escaped caption');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

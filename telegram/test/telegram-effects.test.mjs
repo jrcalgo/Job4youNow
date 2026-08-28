@@ -131,9 +131,18 @@ test('send_contacts sends the text summary and a native contact card for phone c
   assert.ok(server.requests.some((r) => r.path.endsWith('/sendContact')));
 });
 
-test('sendQueueList and sendDigestAndCard render without crashing', async () => {
+test('sendQueueList sends a "1. A" button alongside the text listing, and sendDigestAndCard renders without crashing', async () => {
   server.when('/sendMessage', () => ({ body: { ok: true, result: {} } }));
   await effects.sendQueueList('tok', '42', [{ id: 'q1', title: 'A', item_count: 1, ingested_at: '2026-01-01', active: true }]);
+  const queueListBody = JSON.parse(server.requests.at(-1).bodyRaw.toString('utf8'));
+  assert.match(queueListBody.text, /A \(1 role/);
+  assert.deepEqual(queueListBody.reply_markup, {
+    inline_keyboard: [
+      [{ text: 'Main menu', callback_data: 'tg:menu:main' }],
+      [{ text: '1. A', callback_data: 'tg:queue:1' }],
+    ],
+  });
+
   const state = stateWithOneItem();
   await effects.sendDigestAndCard('tok', '42', state);
   assert.ok(server.requests.length >= 2);

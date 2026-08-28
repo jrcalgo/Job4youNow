@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   ACTIONS,
   HELP_TEXT,
+  MAIN_MENU_TEXT,
   applyAction,
   assertSafeArtifactPath,
   buildSessionState,
@@ -25,9 +26,12 @@ import {
   formatQueueList,
   inlineKeyboard,
   isAuthorizedUpdate,
+  mainMenuKeyboard,
   normalizeUpdate,
+  withMainMenuRow,
   parseCallbackData,
   parseCommand,
+  queueListKeyboard,
   redactSecrets,
   shortHash,
   validateQueue,
@@ -89,6 +93,7 @@ test('parseCommand: closed grammar + injection rejection', () => {
     ['skip', 'skip'], ['cv', 'cv'], ['resume_cv', 'cv'], ['jd', 'jd'], ['job', 'jd'],
     ['contacts', 'contacts'], ['who', 'contacts'], ['company', 'company'],
     ['list', 'list'], ['digest', 'list'], ['help', 'help'], ['?', 'help'],
+    ['/start', 'help'], ['start', 'help'],
     ['pause', 'pause'], ['stop', 'pause'], ['resume', 'resume'], ['continue', 'resume'],
     ['queues', 'queues'], ['queue', 'queues'],
     ['please submit this application', 'unknown'],
@@ -149,6 +154,15 @@ test('formatQueueList marks the active queue and gives a QUEUE <n> hint', () => 
   assert.match(out, /2\. Batch B \(5 role\(s\)/);
   assert.match(out, /QUEUE <n>/);
   assert.equal(formatQueueList([]), 'No queues ingested yet.');
+});
+
+test('queueListKeyboard gives one tappable "tg:queue:<n>" button per queue, capped, in the same order as formatQueueList', () => {
+  const queues = Array.from({ length: 12 }, (_, i) => ({ id: `q${i + 1}`, title: `Batch ${i + 1}` }));
+  const kb = queueListKeyboard(queues);
+  assert.equal(kb.inline_keyboard.length, 10, 'capped at MAX_QUEUE_BUTTONS even with more ingested queues');
+  assert.deepEqual(kb.inline_keyboard[0], [{ text: '1. Batch 1', callback_data: 'tg:queue:1' }]);
+  assert.deepEqual(kb.inline_keyboard[9], [{ text: '10. Batch 10', callback_data: 'tg:queue:10' }]);
+  assert.equal(queueListKeyboard([]), undefined);
 });
 
 test('formatCompanySummary / formatMore / formatContactsText / formatCompletion render without crashing', () => {
@@ -268,16 +282,85 @@ test('inlineKeyboard binds queue_short + item hash into 64-byte-safe callback_da
   const state = buildSessionState(validated.queue, { chatId: '1' });
   const kb = inlineKeyboard(state, currentItem(state));
   const flat = kb.inline_keyboard.flat();
-  assert.equal(flat.length, 9);
-  for (const b of flat) {
+  assert.equal(flat.length, 12);
+  const cardButtons = flat.filter((b) => b.callback_data.startsWith('tg:v1:'));
+  assert.equal(cardButtons.length, 11);
+  for (const b of cardButtons) {
     assert.ok(b.callback_data.length <= 64);
     assert.match(b.callback_data, new RegExp(`^tg:v1:${state.queue_short}:`));
   }
+  const labels = flat.map((b) => b.text);
+  assert.ok(labels.includes('List'));
+  assert.ok(labels.includes('Queues'));
   assert.equal(inlineKeyboard({ items: [] }), undefined);
 });
 
-test('ACTIONS includes the two commands the original grammar lacked', () => {
+test('mainMenuKeyboard mixes this daemon\'s tg:menu: buttons with the agent app\'s own callback_data convention', () => {
+  const kb = mainMenuKeyboard();
+  const flat = kb.inline_keyboard.flat();
+  assert.deepEqual(flat.map((b) => b.callback_data).sort(), ['backlog', 'modelmenu', 'settingsmenu', 'tg:menu:help', 'tg:menu:queues']);
+  const labels = flat.map((b) => b.text);
+  assert.ok(labels.includes('Backlog'));
+  assert.ok(labels.includes('Models'));
+  assert.match(MAIN_MENU_TEXT, /agent app/);
+});
+
+test('withMainMenuRow prepends a Main menu row', () => {
+  const kb = withMainMenuRow({ inline_keyboard: [[{ text: 'Queues', callback_data: 'tg:menu:queues' }]] });
+  assert.equal(kb.inline_keyboard[0][0].callback_data, 'tg:menu:main');
+  assert.equal(kb.inline_keyboard[1][0].callback_data, 'tg:menu:queues');
+});
+
+test('parseCallbackData recognizes tg:menu: buttons regardless of active session state', () => {
+  assert.equal(parseCallbackData('tg:menu:queues', null).action, 'queues');
+  assert.equal(parseCallbackData('tg:menu:help', null).action, 'help');
+  assert.equal(parseCallbackData('tg:menu:main', null).action, 'main');
+  assert.equal(parseCallbackData('tg:bl:enqueue:listing-abc', null).action, 'bl_enqueue');
+  const withState = parseCallbackData('tg:menu:queues', { queue_short: 'abcdef', items: [] });
+  assert.equal(withState.action, 'queues');
+
+  const bad = parseCallbackData('tg:menu:nonsense', null);
+  assert.equal(bad.action, 'unknown');
+  assert.equal(bad.reason, 'bad_action');
+});
+
+test('parseCallbackData recognizes tg:queue:<n> as the same use_queue action QUEUE <n> parses to', () => {
+  const viaButton = parseCallbackData('tg:queue:3', null);
+  assert.deepEqual(viaButton, { action: 'use_queue', n: 3, raw: 'tg:queue:3' });
+  // Works with or without an active session — queue switching is queue-agnostic.
+  const withState = parseCallbackData('tg:queue:1', { queue_short: 'abcdef', items: [] });
+  assert.equal(withState.action, 'use_queue');
+  assert.equal(withState.n, 1);
+});
+
+test('parseCallbackData forwards buttons outside its own tg: namespace as app_callback', () => {
+  const bare = parseCallbackData('backlog', null);
+  assert.deepEqual(bare, { action: 'app_callback', appAction: 'backlog', appValue: null, raw: 'backlog' });
+
+  const withValue = parseCallbackData('role:backend', { queue_short: 'abcdef', items: [] });
+  assert.deepEqual(withValue, { action: 'app_callback', appAction: 'role', appValue: 'backend', raw: 'role:backend' });
+
+  const modelWizard = parseCallbackData('modeltask:scan_role', null);
+  assert.equal(modelWizard.action, 'app_callback');
+  assert.equal(modelWizard.appAction, 'modeltask');
+  assert.equal(modelWizard.appValue, 'scan_role');
+
+  // A value containing its own colon is preserved whole (partition-style, not split-style).
+  const colonInValue = parseCallbackData('task:abc:123', null);
+  assert.equal(colonInValue.appAction, 'task');
+  assert.equal(colonInValue.appValue, 'abc:123');
+});
+
+test('parseCallbackData still rejects anything reserved for its own "tg:" namespace or shaped unlike any real action', () => {
+  assert.equal(parseCallbackData('tg:bogus', null).action, 'unknown');
+  assert.equal(parseCallbackData('tg:bogus', null).reason, 'malformed_callback');
+  assert.equal(parseCallbackData('', null).action, 'unknown');
+  assert.equal(parseCallbackData('not-a-callback', null).action, 'unknown');
+});
+
+test('ACTIONS includes the two commands the original grammar lacked, plus app_callback', () => {
   assert.ok(ACTIONS.includes('resume'));
   assert.ok(ACTIONS.includes('queues'));
   assert.ok(ACTIONS.includes('use_queue'));
+  assert.ok(ACTIONS.includes('app_callback'));
 });

@@ -26,6 +26,18 @@ test('toParam maps JS types to Data API SqlParameter shapes', () => {
   assert.deepEqual(toParam('a', [1, 2]), { name: 'a', value: { stringValue: '[1,2]' }, typeHint: 'JSON' });
 });
 
+test('toParam formats a Date the way the Data API actually requires (regression: Parse Error for TimeStamp)', () => {
+  // The Python agent app hit a real DatabaseErrorException in production
+  // from the equivalent bug — see agent/app/db/aurora_client.py's
+  // _format_timestamp doc comment. The Data API's TIMESTAMP typeHint
+  // rejects toISOString()'s 'T'/'Z' as "invalid characters".
+  const date = new Date(Date.UTC(2026, 7, 26, 6, 54, 10, 587));
+  const param = toParam('created_at', date);
+  assert.deepEqual(param, { name: 'created_at', value: { stringValue: '2026-08-26 06:54:10.587' }, typeHint: 'TIMESTAMP' });
+  assert.ok(!param.value.stringValue.includes('T'));
+  assert.ok(!param.value.stringValue.includes('Z'));
+});
+
 test('exec() parses formattedRecords JSON into rows', async () => {
   const fake = createFakeRdsClient();
   fake.when(ExecuteStatementCommand, () => ({ formattedRecords: JSON.stringify([{ id: 1 }, { id: 2 }]) }));
@@ -33,6 +45,33 @@ test('exec() parses formattedRecords JSON into rows', async () => {
 
   const { rows } = await exec('SELECT id FROM t');
   assert.deepEqual(rows, [{ id: 1 }, { id: 2 }]);
+});
+
+test('exec() parses a jsonb column that comes back as its own escaped JSON string', async () => {
+  // Regression test: the Data API's formatRecordsAs=JSON mode returns a
+  // jsonb column's value as its OWN escaped JSON string, not a nested
+  // object — see db/client.mjs's coerceJsonStrings doc comment (the exact
+  // shape that broke queue_items.summary/.contacts if ever read this way,
+  // first NOTICED as an agent_tasks.payload ValidationError on the Python
+  // agent app's mirror of this bug). Hand-built raw formattedRecords the
+  // way the REAL API actually returns it, rather than a plain nested object.
+  const fake = createFakeRdsClient();
+  const raw = JSON.stringify([{ id: 1, summary: JSON.stringify({ why_match: ['Backend overlap'] }) }]);
+  fake.when(ExecuteStatementCommand, () => ({ formattedRecords: raw }));
+  __setTestClient(fake);
+
+  const { rows } = await exec('SELECT id, summary FROM queue_items');
+  assert.deepEqual(rows, [{ id: 1, summary: { why_match: ['Backend overlap'] } }]);
+});
+
+test('exec() leaves a plain string that merely starts with a brace alone', async () => {
+  const fake = createFakeRdsClient();
+  const raw = JSON.stringify([{ id: 1, note: '{not actually json' }]);
+  fake.when(ExecuteStatementCommand, () => ({ formattedRecords: raw }));
+  __setTestClient(fake);
+
+  const { rows } = await exec('SELECT id, note FROM t');
+  assert.equal(rows[0].note, '{not actually json');
 });
 
 test('exec() surfaces numberOfRecordsUpdated for DML with no result set', async () => {
