@@ -2,19 +2,19 @@
 
 This bot never talks to career-ops, mounts a career-ops checkout, or runs any career-ops code. It only knows about the [queue JSON contract](#queue-json-contract) below and the [`ingest` CLI command](#ingesting-a-queue) that reads one. Any producer — career-ops today, something else later — talks to this bot exclusively through `node src/cli.mjs ingest`.
 
-career-ops itself is never edited to support this. Its own working telegram engine (`local/careerops-local.mjs telegram ...`, `modes/telegram.md`) is left exactly as it was and still works against its own bot. This document is what replaces steps 2-4 of career-ops' `modes/telegram.md` ("Start or resume" / "Wait → act loop") for anyone who wants to route a career-ops queue through this hosted bot instead — step 1 ("Build the queue") is unchanged and still produces the same JSON file.
+career-ops itself is never edited to support this. The queue JSON shape below matches what career-ops' own telegram mode used to produce, so an existing producer built against that shape needs no format change to route its queue through this hosted bot instead.
 
-## Why a second bot
+## Why its own bot token
 
-Telegram allows exactly one `getUpdates` long-poll consumer per bot token. This daemon polls **forever**; career-ops' own telegram mode still can too (on demand). Sharing one token means a race for whichever process polls next gets an HTTP 409 and the other goes silent — not a theoretical risk, a guaranteed collision the moment both are used around the same time.
+Telegram allows exactly one `getUpdates` long-poll consumer per bot token. This daemon polls **forever**, so its token must never be shared with any other poller — sharing one token means a race for whichever process polls next gets an HTTP 409 and the other goes silent, a guaranteed collision the moment two consumers use the same token around the same time.
 
-The fix: **create a separate bot with [@BotFather](https://t.me/BotFather)** for this daemon. Message it once, then run:
+The fix: **create a bot with [@BotFather](https://t.me/BotFather)** dedicated to this daemon. Message it once, then run:
 
 ```bash
 docker compose exec bot node src/cli.mjs whoami
 ```
 
-to discover the chat id. A private chat's `chat.id` is your own Telegram user id — the **same value** works for both this bot and career-ops' bot in `TELEGRAM_CHAT_ID`; only `TELEGRAM_BOT_TOKEN` differs between the two `.env` files.
+to discover the chat id. A private chat's `chat.id` is your own Telegram user id — the same value works across any number of your own bots; only `TELEGRAM_BOT_TOKEN` needs to be unique to this daemon.
 
 ## Queue JSON contract
 

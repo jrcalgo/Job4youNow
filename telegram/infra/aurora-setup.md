@@ -124,8 +124,8 @@ aws iam attach-user-policy --user-name <your-iam-user> --policy-arn <the ARN cre
 ```bash
 cp .env.example .env
 # edit .env: AWS_REGION, AURORA_RESOURCE_ARN, AURORA_SECRET_ARN, AURORA_DATABASE=job4younow,
-# S3_BUCKET, plus TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID (see docs/producing-queues.md — a
-# SEPARATE bot from career-ops' own telegram mode) and your AWS credentials/profile.
+# S3_BUCKET, plus TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID (see docs/producing-queues.md)
+# and your AWS credentials/profile.
 
 docker compose build
 docker compose run --rm bot node src/cli.mjs migrate
