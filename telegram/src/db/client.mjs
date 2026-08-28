@@ -57,6 +57,24 @@ function commonArgs() {
 }
 
 /**
+ * The Data API's `TIMESTAMP` typeHint only accepts `YYYY-MM-DD
+ * HH:MM:SS[.FFF]` — a space separator, millisecond precision, NO timezone
+ * suffix (see
+ * https://docs.aws.amazon.com/rdsdataservice/latest/APIReference/API_SqlParameter.html).
+ * `toISOString()` produces `...THH:MM:SS.sssZ` instead — the `T` and `Z`
+ * are both "invalid characters" as far as the Data API's parser is
+ * concerned, which fails the whole call with `DatabaseErrorException:
+ * Parse Error for TimeStamp` (hit for real on the Python agent app's
+ * mirror of this function — see agent/app/db/aurora_client.py's
+ * _format_timestamp). A JS Date is always internally UTC and
+ * toISOString() is already millisecond-precision, so this is a pure
+ * reshape — no timezone math needed, unlike the Python side.
+ */
+function formatTimestamp(date) {
+  return date.toISOString().replace('T', ' ').slice(0, -1);
+}
+
+/**
  * Convert one plain JS value into a Data API SqlParameter. Arrays/plain
  * objects are JSON-stringified with typeHint 'JSON' — pair with an explicit
  * `::jsonb` cast in the SQL text for jsonb columns; typeHint alone isn't a
@@ -70,7 +88,7 @@ export function toParam(name, value) {
       ? { name, value: { longValue: value } }
       : { name, value: { doubleValue: value } };
   }
-  if (value instanceof Date) return { name, value: { stringValue: value.toISOString() }, typeHint: 'TIMESTAMP' };
+  if (value instanceof Date) return { name, value: { stringValue: formatTimestamp(value) }, typeHint: 'TIMESTAMP' };
   if (Array.isArray(value) || typeof value === 'object') {
     return { name, value: { stringValue: JSON.stringify(value) }, typeHint: 'JSON' };
   }
@@ -79,6 +97,41 @@ export function toParam(name, value) {
 
 function paramsFrom(obj) {
   return Object.entries(obj || {}).map(([k, v]) => toParam(k, v));
+}
+
+/**
+ * The Data API's `formatRecordsAs: 'JSON'` mode returns json/jsonb COLUMN
+ * values as their own escaped JSON string, not a nested object/array —
+ * `columnMetadata` (which would otherwise reveal a column's real type) is
+ * blank in this mode, so the Data API can't return it any other way. See
+ * https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/data-api-json.html
+ * and agent/app/db/aurora_client.py's `_coerce_json_strings` (the Python
+ * mirror of this — hit for real as a `queue_items.summary`/`.contacts`-shaped
+ * bug on this side, first NOTICED as an `agent_tasks.payload` one there).
+ * Every repo function here expects a jsonb column already parsed (e.g.
+ * repo.mjs spreads `it.summary.why_match` directly), so this runs once,
+ * here, on every row rather than leaving each call site to remember. Only
+ * strings that actually look like a JSON object/array AND parse cleanly
+ * are touched — a plain string that merely starts with '{' but isn't
+ * valid JSON passes through unchanged.
+ */
+function coerceJsonStrings(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return coerceJsonStrings(JSON.parse(trimmed));
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(coerceJsonStrings);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, coerceJsonStrings(v)]));
+  }
+  return value;
 }
 
 /**
@@ -99,7 +152,7 @@ export async function exec(sql, params = {}, opts = {}) {
     });
     const res = await client().send(cmd);
     if (res.formattedRecords) {
-      return { rows: JSON.parse(res.formattedRecords) };
+      return { rows: JSON.parse(res.formattedRecords).map(coerceJsonStrings) };
     }
     return { rows: [], numberOfRecordsUpdated: res.numberOfRecordsUpdated };
   });
